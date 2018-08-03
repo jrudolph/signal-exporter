@@ -52,6 +52,9 @@ object Exporter extends App {
 }
 
 object BackupReader {
+  val MaxFrameLength = 1000 * 1000
+  val MaxAttachmentLength = 100 * 1000 * 1000
+
   sealed trait RawBackupEvent
   object RawBackupEvent {
     final case class FrameEvent(frame: BackupFrame) extends RawBackupEvent
@@ -208,6 +211,7 @@ object BackupReader {
     }
 
     def bytes(count: Int): Array[Byte] = {
+      if (count > fis.available()) throw new IllegalStateException(s"Couldn't read [$count] bytes from stream, only [${fis.available()}] available")
       val buf = new Array[Byte](count)
       fis.read(buf)
       buf
@@ -234,6 +238,7 @@ object BackupReader {
 
     def readSecretFrame(iv: Array[Byte]): (RawBackupEvent, Array[Byte]) = {
       val len = uint32BE()
+      require(len < MaxFrameLength, s"Frame length [${len}] > MaxFrameLength [$MaxFrameLength]. Data corrupted?")
       val encFrameData = bytes(len - 10)
       val mac = bytes(10)
       val plainFrameData = cipherSetup.decrypt(iv, encFrameData)
@@ -247,6 +252,8 @@ object BackupReader {
         else -1
 
       if (extraDataLength >= 0) {
+        require(extraDataLength < MaxAttachmentLength, s"Frame length [$extraDataLength] > MaxAttachmentLength [$MaxAttachmentLength]. Data corrupted?")
+
         val attIv = nextIv(iv)
         val encAtt = bytes(extraDataLength)
         val attMac = bytes(10)
