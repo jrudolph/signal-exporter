@@ -17,10 +17,6 @@ import org.whispersystems.libsignal.kdf.HKDFv3
 import scala.annotation.tailrec
 import scala.io.Source
 
-sealed trait RawBackupEvent
-case class FrameEvent(frame: BackupFrame) extends RawBackupEvent
-case class AttachmentEvent(frame: BackupFrame, attachmentData: Array[Byte]) extends RawBackupEvent
-
 object Exporter extends App {
   def existingFile(role: String, path: String): File = {
     val file = new File(path)
@@ -38,11 +34,31 @@ object Exporter extends App {
 
   val attachmentsDir = existingFile("Attachments dir", "attachments")
 
-  BackupReader.foldBackupFile(backupFile, pass, ())(BackupReader.dumpDataAndAttachments(attachmentsDir))
+  // dump data
+  // BackupReader.foldRawEvents(backupFile, pass, ())(BackupReader.dumpDataAndAttachments(attachmentsDir))
+
+  // print events
+  /*BackupReader.foldRawEvents(backupFile, pass, ())(BackupReader.foldBackupFrameEvents { (_, event) =>
+    println(event)
+  })*/
+
+  val histo =
+    BackupReader.foldRawEvents(backupFile, pass, Map.empty[String, Int])(BackupReader.foldBackupFrameEvents(BackupReader.dataTypeHistogram))
+
+  histo.toSeq.sortBy(-_._2).foreach {
+    case (tag, count) =>
+      println(f"$count%5d $tag%s")
+  }
 }
 
 object BackupReader {
-  def foldBackupFile[T](backupFile: File, password: String, initialT: T)(f: (T, RawBackupEvent) => T): T = {
+  sealed trait RawBackupEvent
+  object RawBackupEvent {
+    final case class FrameEvent(frame: BackupFrame) extends RawBackupEvent
+    final case class FrameEventWithAttachment(frame: BackupFrame, attachmentData: Array[Byte]) extends RawBackupEvent
+  }
+
+  def foldRawEvents[T](backupFile: File, password: String, initialT: T)(f: (T, RawBackupEvent) => T): T = {
     val fis = new FileInputStream(backupFile)
     val pass = password.trim.replaceAll(" ", "")
 
@@ -76,14 +92,89 @@ object BackupReader {
     readNext(iv, initialT)
   }
 
+  sealed trait BackupFrameEvent extends Product
+  object BackupFrameEvent {
+    final case class DatabaseVersion(version: Int) extends BackupFrameEvent
+    final case class SharedPreference(file: String, key: String, value: String) extends BackupFrameEvent
+    final case class Avatar(name: String, data: Array[Byte]) extends BackupFrameEvent
+    trait SqlParameter
+    final case class StringParameter(value: String) extends SqlParameter
+    final case class IntParameter(value: Long) extends SqlParameter
+    final case class DoubleParameter(value: Double) extends SqlParameter
+    final case class BlobParameter(data: Array[Byte]) extends SqlParameter
+    final case object NullParameter extends SqlParameter
+
+    final case class SqlStatement(statement: String, parameters: Seq[SqlParameter]) extends BackupFrameEvent
+    final case class Attachment(rowId: Long, attachmentId: Long, data: Array[Byte]) extends BackupFrameEvent
+    final case object End extends BackupFrameEvent
+  }
+  def foldBackupFrameEvents[T](f: (T, BackupFrameEvent) => T): (T, RawBackupEvent) => T = { (t, event) =>
+    import BackupFrameEvent._
+    import RawBackupEvent._
+
+    val richEvent =
+      event match {
+        case FrameEvent(frame) =>
+          if (frame.hasVersion)
+            DatabaseVersion(frame.getVersion.getVersion)
+          else if (frame.hasPreference) {
+            val pref = frame.getPreference
+            SharedPreference(pref.getFile, pref.getKey, pref.getValue)
+          } else if (frame.hasStatement) {
+            val stmt = frame.getStatement
+            import scala.collection.JavaConverters._
+            val params = stmt.getParametersList.asScala.map { param =>
+              if (param.hasStringParamter)
+                StringParameter(param.getStringParamter)
+              else if (param.hasIntegerParameter)
+                IntParameter(param.getIntegerParameter)
+              else if (param.hasDoubleParameter)
+                DoubleParameter(param.getDoubleParameter)
+              else if (param.hasBlobParameter)
+                BlobParameter(param.getBlobParameter.toByteArray)
+              else if (param.hasNullparameter)
+                NullParameter
+              else
+                throw new IllegalStateException(s"Unexpected SQL parameter: $param")
+            }.toVector
+            SqlStatement(stmt.getStatement, params)
+          } else if (frame.hasEnd)
+            End
+          else
+            throw new IllegalStateException(s"Unexpected event: $event")
+
+        case FrameEventWithAttachment(frame, attachmentData) =>
+          if (frame.hasAttachment) {
+            val attachment = frame.getAttachment
+            Attachment(attachment.getRowId, attachment.getAttachmentId, attachmentData)
+          } else if (frame.hasAvatar) {
+            val avatar = frame.getAvatar
+            Avatar(avatar.getName, attachmentData)
+          } else throw new IllegalStateException(s"Unexpected event with attachment: $attachmentData")
+
+      }
+    f(t, richEvent)
+  }
+
   def dumpDataAndAttachments(attachmentsDir: File)(u: Unit, event: RawBackupEvent): Unit = event match {
-    case FrameEvent(frame) => println(frame)
-    case AttachmentEvent(frame, attachmentData) =>
+    case RawBackupEvent.FrameEvent(frame) => println(frame)
+    case RawBackupEvent.FrameEventWithAttachment(frame, attachmentData) =>
+      val fileName =
+        if (frame.hasAttachment) s"att-${frame.getAttachment.getAttachmentId}"
+        else if (frame.hasAvatar) s"avatar-${frame.getAvatar.getName}"
+        else "unknown"
+
       println(frame)
-      val attachment = frame.getAttachment
-      val out = new FileOutputStream(new File(attachmentsDir, s"${attachment.getAttachmentId}.jpg"))
+      val out = new FileOutputStream(new File(attachmentsDir, s"$fileName.jpg"))
       out.write(attachmentData)
       out.close()
+  }
+
+  type Histogram[T] = Map[T, Int]
+  def dataTypeHistogram(counts: Histogram[String], event: BackupFrameEvent): Histogram[String] = {
+    val tag = event.productPrefix
+    val curCount = counts.getOrElse(tag, 0)
+    counts.updated(tag, curCount + 1)
   }
 
   case class CipherSetup(cipher: Cipher, cipherKey: Array[Byte]) {
@@ -148,16 +239,22 @@ object BackupReader {
       val plainFrameData = cipherSetup.decrypt(iv, encFrameData)
       val frame = BackupProtos.BackupFrame.parseFrom(plainFrameData)
 
-      if (frame.hasAttachment) {
-        val attachment = frame.getAttachment
+      val extraDataLength =
+        if (frame.hasAttachment)
+          frame.getAttachment.getLength
+        else if (frame.hasAvatar)
+          frame.getAvatar.getLength
+        else -1
+
+      if (extraDataLength >= 0) {
         val attIv = nextIv(iv)
-        val encAtt = bytes(attachment.getLength)
+        val encAtt = bytes(extraDataLength)
         val attMac = bytes(10)
         val plainAtt = cipherSetup.decrypt(attIv, encAtt)
 
-        (AttachmentEvent(frame, plainAtt), nextIv(attIv))
+        (RawBackupEvent.FrameEventWithAttachment(frame, plainAtt), nextIv(attIv))
       } else
-        (FrameEvent(frame), nextIv(iv))
+        (RawBackupEvent.FrameEvent(frame), nextIv(iv))
     }
   }
 
