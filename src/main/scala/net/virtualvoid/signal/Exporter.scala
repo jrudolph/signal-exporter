@@ -10,11 +10,13 @@ import javax.crypto.Cipher
 import javax.crypto.Mac
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
+import net.virtualvoid.signal.BackupReader.BackupRecord
 import org.thoughtcrime.securesms.backup.BackupProtos
 import org.thoughtcrime.securesms.backup.BackupProtos.BackupFrame
 import org.whispersystems.libsignal.kdf.HKDFv3
 
 import scala.annotation.tailrec
+import scala.collection.mutable.ListBuffer
 import scala.io.Source
 
 object Exporter extends App {
@@ -42,13 +44,21 @@ object Exporter extends App {
     println(event)
   })*/
 
+  /*
+  // show frame type histogram
   val histo =
     BackupReader.foldRawEvents(backupFile, pass, Map.empty[String, Int])(BackupReader.foldBackupFrameEvents(BackupReader.dataTypeHistogram))
 
   histo.toSeq.sortBy(-_._2).foreach {
     case (tag, count) =>
       println(f"$count%5d $tag%s")
-  }
+  }*/
+
+  val records =
+    BackupReader.foldRawEvents(backupFile, pass, BackupReader.State(Map.empty, ListBuffer.empty[BackupRecord]))(BackupReader.foldBackupFrameEvents(BackupReader.recordReader[ListBuffer[BackupRecord]] { (buffer, record) =>
+      buffer += record
+    }))
+
 }
 
 object BackupReader {
@@ -157,6 +167,55 @@ object BackupReader {
 
       }
     f(t, richEvent)
+  }
+
+  final case class FieldMetadata(
+      fieldName: String,
+      tpe:       String,
+      extra:     String
+  )
+  final case class TableMetadata(
+      tableName: String,
+      fields:    Seq[FieldMetadata])
+  final case class BackupRecord(
+      tableMetadata: TableMetadata,
+      data:          Map[String, BackupFrameEvent.SqlParameter]
+  )
+  final case class State[T](tableMetadata: Map[String, TableMetadata], t: T)
+  val CreateTable = """CREATE TABLE (\w+) \(([^)]*)\)""".r
+  val FieldSpec = """\s*(\w+) (\w+)(?: (.*))?""".r
+  val Insert = """INSERT INTO (\w+) VALUES \([?,]*\)""".r
+  def recordReader[T](f: (T, BackupRecord) => T)(state: State[T], event: BackupFrameEvent): State[T] = event match {
+    case BackupFrameEvent.SqlStatement(statement, parameters) =>
+      statement match {
+        case CreateTable(tableName, fieldSpecs) =>
+          val fields =
+            fieldSpecs.split(",").map {
+              case FieldSpec(name, tpe, extra) =>
+                FieldMetadata(name, tpe, if (extra ne null) extra else "")
+            }
+
+          val tableMeta = TableMetadata(tableName, fields)
+          if (parameters.nonEmpty) println(s"WARN: CREATE TABLE statement [$statement] had non-empty parameters: [$parameters]")
+          state.copy(tableMetadata = state.tableMetadata + (tableName -> tableMeta))
+        case Insert(tableName) =>
+          state.tableMetadata.get(tableName) match {
+            case None =>
+              println(s"WARN: got insert for unknown table [$tableName], ignoring, [$event]")
+              state
+            case Some(metadata) =>
+              if (metadata.fields.size != parameters.size) {
+                println(s"WARN: got unexpected number of parameters for insert statement got [${parameters.size}] expected [${metadata.fields.size}] for table [$tableName] [$event]")
+                state
+              } else {
+                val fieldMap = (metadata.fields.map(_.fieldName), parameters).zipped.toMap
+                val record = BackupRecord(metadata, fieldMap)
+                state.copy(t = f(state.t, record))
+              }
+          }
+        case _ => state
+      }
+    case _ => state
   }
 
   def dumpDataAndAttachments(attachmentsDir: File)(u: Unit, event: RawBackupEvent): Unit = event match {
