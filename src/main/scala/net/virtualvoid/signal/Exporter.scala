@@ -101,7 +101,6 @@ object Exporter {
     }
 
     val model = DataModel.convertRecordsToModel(records)
-    println(model)
 
     import spray.json._
     import DataModel.DataModelFormat._
@@ -117,7 +116,10 @@ object Exporter {
   }
 
   def main(args: Array[String]): Unit =
-    println(Try(printRecordHeuristics()))
+    try println(printRecordHeuristics())
+    catch {
+      case x: Throwable => x.printStackTrace()
+    }
 }
 
 object BackupReader {
@@ -391,11 +393,24 @@ object BackupReader {
     }
     def convertRecordsToModel(records: Seq[BackupRecord]): SignalData = {
       val tables = records.groupBy(_.tableMetadata.tableName)
+      val prefs = tables("recipient_preferences")
+      val groups = tables("groups")
 
-      def singleRecipientInfo(phone: String): Recipient =
-        Recipient(phone, phone) // TODO: extract name
-      def groupInfo(groupName: String): Group =
-        Group(groupName, Nil) // TODO: extract recipients
+      def singleRecipientInfo(phone: String): Recipient = {
+        val name =
+          prefs.find(_.data("recipient_ids").asString == phone).fold("<unknown>")(_.data("system_display_name").asString)
+        Recipient(phone, name)
+      }
+      def groupInfo(groupId: String): Group =
+        groups.find(_.data("group_id").asString == groupId) match {
+          case Some(groupRow) =>
+            val members = groupRow.data("members").asString.split(',').map(singleRecipientInfo)
+            Group(groupRow.data("title").asString, members)
+          case None =>
+            println(s"WARN: didn't find group details for [$groupId]")
+            Group(groupId, Nil)
+        }
+
       def threadInfo(threadId: Long): Recipients = {
         val threadRow = tables("thread").find(_.data("_id").asLong == threadId).get
         val recps = threadRow.data("recipient_ids").asString
@@ -406,7 +421,7 @@ object BackupReader {
           singleRecipientInfo(recps)
       }
       def typeByFlags(flags: Long): Option[MessageType] =
-        (flags & Constants.BaseInfoMask) match {
+        flags & Constants.BaseInfoMask match {
           case Constants.Received => Some(Received)
           case Constants.Sent     => Some(Sent)
           case other              => None // Other(other.toInt)
