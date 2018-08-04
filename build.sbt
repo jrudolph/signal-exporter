@@ -5,6 +5,7 @@ enablePlugins(ProtobufPlugin)
 
 libraryDependencies ++= Seq(
   "org.whispersystems" % "signal-protocol-java" % "2.6.2",
+  "io.spray" %% "spray-json" % "1.3.4",
 
   "org.specs2" %% "specs2-core" % specs2V % "test"
 )
