@@ -99,7 +99,8 @@ object Exporter {
             .take(20) foreach { case (value, els) => println(f"${els.size}%5d -> $value%s") }
         }
     }
-
+  }
+  def exportToJson(): Unit = {
     val model = DataModel.convertRecordsToModel(records)
 
     import spray.json._
@@ -114,9 +115,12 @@ object Exporter {
       println(s"${r.data("msg_box").asLong & 0x1e} -> ${r.data("body").asString}")
     }*/
   }
+  def exportToHtml(): Unit = {
+
+  }
 
   def main(args: Array[String]): Unit =
-    try println(printRecordHeuristics())
+    try println(exportToJson())
     catch {
       case x: Throwable => x.printStackTrace()
     }
@@ -317,15 +321,14 @@ object BackupReader {
     ) extends Message {
       override def message: SimpleMessage = this
     }
-    trait Data
     final case class Attachment(
+        uniqueId:    Long,
         fileName:    String,
-        contentType: String,
-        data:        Data
+        contentType: String
     )
     final case class MediaMessage(
         message:    SimpleMessage,
-        attachment: Data
+        attachment: Attachment
     ) extends Message
 
     final case class Conversation(
@@ -362,7 +365,7 @@ object BackupReader {
         }
 
       implicit def simpleMessageFormat: JsonFormat[SimpleMessage] = jsonFormat3(SimpleMessage)
-      implicit def dataFormat: JsonFormat[Data] = ???
+      implicit def attachmentFormat: JsonFormat[Attachment] = jsonFormat3(Attachment)
       implicit def mediaMessageFormat: JsonFormat[MediaMessage] = jsonFormat2(MediaMessage)
       implicit def messageFormat: JsonFormat[Message] =
         new JsonFormat[Message] {
@@ -395,6 +398,7 @@ object BackupReader {
       val tables = records.groupBy(_.tableMetadata.tableName)
       val prefs = tables("recipient_preferences")
       val groups = tables("groups")
+      val parts = tables("part")
 
       def singleRecipientInfo(phone: String): Recipient = {
         val name =
@@ -453,8 +457,16 @@ object BackupReader {
                     tpe,
                     row.data("date").asLong
                   )
-                // TODO: actual media part
-                msg
+
+                parts.find(_.data("mid") == row.data("_id")) match {
+                  case Some(part) =>
+                    MediaMessage(
+                      msg,
+                      Attachment(part.data("unique_id").asLong, part.data("file_name").asString, part.data("ct").asString)
+                    )
+                  case None =>
+                    msg
+                }
               }
             }
           }
