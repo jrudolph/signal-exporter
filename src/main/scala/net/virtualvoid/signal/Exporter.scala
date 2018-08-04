@@ -43,7 +43,8 @@ object Exporter {
   val attachmentsDir = existingFile("Attachments dir", "attachments")
 
   // dump data
-  // BackupReader.foldRawEvents(backupFile, pass, ())(BackupReader.dumpDataAndAttachments(attachmentsDir))
+  def dumpAttachments(): Unit =
+    BackupReader.foldRawEvents(backupFile, pass, ())(BackupReader.dumpDataAndAttachments(attachmentsDir))
 
   // print events
   /*BackupReader.foldRawEvents(backupFile, pass, ())(BackupReader.foldBackupFrameEvents { (_, event) =>
@@ -116,12 +117,59 @@ object Exporter {
     }*/
   }
   def exportToHtml(): Unit = {
+    val model = DataModel.convertRecordsToModel(records)
+    import DataModel._
+    model.conversations.filter(_.messages.nonEmpty).foreach { c =>
+      val name = c.recipients match {
+        case g: Group     => g.name
+        case r: Recipient => r.name
+      }
+      val nameClean = name.filter(_.isLetter)
+      val fos = new FileOutputStream(s"conversations/$nameClean.html")
+      fos.write(
+        """
+          |<html>
+          |<body>
+          |<table>
+          |""".stripMargin.getBytes("utf8"))
 
+      def dateString(date: Long): String = new Date(date).toString
+      def whoString(m: SimpleMessage): String =
+        if (m.`type` == Sent) "me"
+        else c.recipients match {
+          case g: Group     => g.recipients.find(_.phone == m.from.get).fold("unknown")(_.name)
+          case r: Recipient => r.name
+        }
+
+      c.messages.foreach { m =>
+        val maybePicture =
+          m match {
+            case MediaMessage(message, attachment) =>
+              val ref = s"../attachments/att-${attachment.uniqueId}.jpg"
+              s"""<td><a href="$ref"><img width="100" src="$ref" alt="${attachment.fileName}"/></a></td>"""
+            case _ => "<td/>"
+          }
+        fos.write(
+          s"""<tr><td>${dateString(m.message.dateSentMillis)}</td><td>${whoString(m.message)}</td>$maybePicture<td>${m.message.body}</td></tr>"""
+            .stripMargin.getBytes("utf8")
+        )
+      }
+
+      fos.write("""
+          |</table>
+          |</body>
+          |</html>
+        """.stripMargin.getBytes("utf8"))
+      fos.close()
+    }
   }
 
   def main(args: Array[String]): Unit =
-    try println(exportToJson())
-    catch {
+    try {
+      //dumpAttachments()
+      exportToHtml()
+      //exportToJson()
+    } catch {
       case x: Throwable => x.printStackTrace()
     }
 }
@@ -486,14 +534,14 @@ object BackupReader {
   }
 
   def dumpDataAndAttachments(attachmentsDir: File)(u: Unit, event: RawBackupEvent): Unit = event match {
-    case RawBackupEvent.FrameEvent(frame) => println(frame)
+    case RawBackupEvent.FrameEvent(frame) => //println(frame)
     case RawBackupEvent.FrameEventWithAttachment(frame, attachmentData) =>
       val fileName =
         if (frame.hasAttachment) s"att-${frame.getAttachment.getAttachmentId}"
         else if (frame.hasAvatar) s"avatar-${frame.getAvatar.getName}"
         else "unknown"
 
-      println(frame)
+      //println(frame)
       val out = new FileOutputStream(new File(attachmentsDir, s"$fileName.jpg"))
       out.write(attachmentData)
       out.close()
