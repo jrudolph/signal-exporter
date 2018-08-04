@@ -317,6 +317,7 @@ object BackupReader {
     final case class SimpleMessage(
         body:           String,
         `type`:         MessageType,
+        from:           Option[String],
         dateSentMillis: Long
     ) extends Message {
       override def message: SimpleMessage = this
@@ -364,7 +365,7 @@ object BackupReader {
           }
         }
 
-      implicit def simpleMessageFormat: JsonFormat[SimpleMessage] = jsonFormat3(SimpleMessage)
+      implicit def simpleMessageFormat: JsonFormat[SimpleMessage] = jsonFormat4(SimpleMessage)
       implicit def attachmentFormat: JsonFormat[Attachment] = jsonFormat3(Attachment)
       implicit def mediaMessageFormat: JsonFormat[MediaMessage] = jsonFormat2(MediaMessage)
       implicit def messageFormat: JsonFormat[Message] =
@@ -440,6 +441,7 @@ object BackupReader {
                 SimpleMessage(
                   row.data("body").asString,
                   tpe,
+                  if (tpe == Received) Some(row.data("address").asString) else None,
                   row.data("date_sent").asLong
                 )
               }
@@ -455,6 +457,7 @@ object BackupReader {
                   SimpleMessage(
                     row.data("body").asString,
                     tpe,
+                    if (tpe == Received) Some(row.data("address").asString) else None,
                     row.data("date").asLong
                   )
 
