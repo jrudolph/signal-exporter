@@ -11,11 +11,9 @@ import javax.crypto.Cipher
 import javax.crypto.Mac
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
-import net.virtualvoid.signal.BackupReader.BackupFrameEvent.IntParameter
 import net.virtualvoid.signal.BackupReader.BackupFrameEvent.SqlParameter
 import net.virtualvoid.signal.BackupReader.BackupRecord
 import net.virtualvoid.signal.BackupReader.DataModel
-import net.virtualvoid.signal.BackupReader.DataModel.MediaMessage
 import org.thoughtcrime.securesms.backup.BackupProtos
 import org.thoughtcrime.securesms.backup.BackupProtos.BackupFrame
 import org.whispersystems.libsignal.kdf.HKDFv3
@@ -23,7 +21,6 @@ import org.whispersystems.libsignal.kdf.HKDFv3
 import scala.annotation.tailrec
 import scala.collection.mutable.ListBuffer
 import scala.io.Source
-import scala.util.Try
 
 object Exporter {
   def existingFile(role: String, path: String): File = {
@@ -104,8 +101,8 @@ object Exporter {
   def exportToJson(): Unit = {
     val model = DataModel.convertRecordsToModel(records)
 
-    import spray.json._
     import DataModel.DataModelFormat._
+    import spray.json._
 
     val output = new FileOutputStream("data.json")
     output.write(model.toJson.prettyPrint.getBytes("utf8"))
