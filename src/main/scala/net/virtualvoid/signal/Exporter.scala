@@ -16,7 +16,6 @@ import net.virtualvoid.signal.BackupReader.BackupRecord
 import net.virtualvoid.signal.BackupReader.DataModel
 import org.thoughtcrime.securesms.backup.BackupProtos
 import org.thoughtcrime.securesms.backup.BackupProtos.BackupFrame
-import org.whispersystems.libsignal.kdf.HKDFv3
 
 import scala.annotation.tailrec
 import scala.collection.mutable.ListBuffer
@@ -44,21 +43,23 @@ object Exporter {
     BackupReader.foldRawEvents(backupFile, pass, ())(BackupReader.dumpDataAndAttachments(attachmentsDir))
 
   // print events
-  /*BackupReader.foldRawEvents(backupFile, pass, ())(BackupReader.foldBackupFrameEvents { (_, event) =>
-    println(event)
-  })*/
+  def printEvents(): Unit =
+    BackupReader.foldRawEvents(backupFile, pass, ())(BackupReader.foldBackupFrameEvents { (_, event) =>
+      println(event)
+    })
 
-  /*
   // show frame type histogram
-  val histo =
-    BackupReader.foldRawEvents(backupFile, pass, Map.empty[String, Int])(BackupReader.foldBackupFrameEvents(BackupReader.dataTypeHistogram))
+  def printFrameTypeHisto(): Unit = {
+    val histo =
+      BackupReader.foldRawEvents(backupFile, pass, Map.empty[String, Int])(BackupReader.foldBackupFrameEvents(BackupReader.dataTypeHistogram))
 
-  histo.toSeq.sortBy(-_._2).foreach {
-    case (tag, count) =>
-      println(f"$count%5d $tag%s")
-  }*/
+    histo.toSeq.sortBy(-_._2).foreach {
+      case (tag, count) =>
+        println(f"$count%5d $tag%s")
+    }
+  }
 
-  val records: ListBuffer[BackupRecord] =
+  def records: ListBuffer[BackupRecord] =
     BackupReader.foldRawEvents(backupFile, pass, BackupReader.State(Map.empty, ListBuffer.empty[BackupRecord]))(BackupReader.foldBackupFrameEvents(BackupReader.recordReader[ListBuffer[BackupRecord]] { (buffer, record) =>
       buffer += record
     })).t
@@ -164,14 +165,16 @@ object Exporter {
   def main(args: Array[String]): Unit =
     try {
       //dumpAttachments()
-      exportToHtml()
+      //exportToHtml()
       //exportToJson()
+      printEvents()
     } catch {
       case x: Throwable => x.printStackTrace()
     }
 }
 
 object BackupReader {
+  val BackupKeyDerivationExtra = "Backup Export".getBytes("ASCII")
   val MaxFrameLength = 1000 * 1000
   val MaxAttachmentLength = 100 * 1000 * 1000
 
@@ -191,7 +194,7 @@ object BackupReader {
     val salt = if (header.hasSalt) header.getSalt.toByteArray else null
     val keys = getBackupKey(pass, salt)
 
-    val derived = new HKDFv3().deriveSecrets(keys, "Backup Export".getBytes(), 64)
+    val derived = hkdf3(keys, BackupKeyDerivationExtra, 64)
     val cipherKey = derived.take(32)
     val macKey = derived.drop(32)
     val cipher = Cipher.getInstance("AES/CTR/NoPadding")
@@ -653,5 +656,30 @@ object BackupReader {
 
     nextRound(input, 250000)
       .take(32)
+  }
+
+  def hkdf3(key: Array[Byte], extra: Array[Byte], outputLength: Int, salt: Array[Byte] = new Array[Byte](32)): Array[Byte] = {
+    val mac = Mac.getInstance("HmacSHA256")
+    mac.init(new SecretKeySpec(salt, "HmacSHA256"))
+    val key2 = mac.doFinal(key)
+    mac.init(new SecretKeySpec(key2, "HmacSHA256"))
+
+    val result = new Array[Byte](outputLength)
+
+    @tailrec
+    def step(lastResult: Array[Byte], iteration: Int, resultOffset: Int): Array[Byte] =
+      if (resultOffset >= outputLength) result
+      else {
+        mac.update(lastResult)
+        mac.update(extra)
+        mac.update(iteration.toByte)
+
+        val newData = mac.doFinal()
+        val needed = math.min(newData.size, outputLength - resultOffset)
+        System.arraycopy(newData, 0, result, resultOffset, needed)
+        step(newData, iteration + 1, resultOffset + needed)
+      }
+
+    step(Array.empty, iteration = 1, 0)
   }
 }
