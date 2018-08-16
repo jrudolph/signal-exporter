@@ -11,6 +11,12 @@ libraryDependencies ++= Seq(
 
 scalaVersion := scalaV
 
+scalacOptions ++= Seq(
+  "-Xlint",
+  "-unchecked",
+  "-deprecation",
+)
+
 // docs
 
 enablePlugins(ParadoxMaterialThemePlugin)
