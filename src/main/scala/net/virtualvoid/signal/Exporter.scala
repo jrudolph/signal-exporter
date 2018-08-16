@@ -8,9 +8,151 @@ import net.virtualvoid.signal.BackupFrameEvent.SqlParameter
 import net.virtualvoid.signal.BackupReader.BackupRecord
 import net.virtualvoid.signal.BackupReader.DataModel
 import net.virtualvoid.signal.FrameEventReader.FrameEventConsumer
+import net.virtualvoid.signal.RawFrameReader.RawBackupEventConsumer
 
 import scala.collection.mutable.ListBuffer
 import scala.io.Source
+
+object Operations {
+  def dumpDataAndAttachments(attachmentsDir: File): RawBackupEventConsumer[Unit] =
+    RawBackupEventConsumer((), { (_, event) =>
+      event match {
+        case RawBackupEvent.FrameEvent(frame) => //println(frame)
+        case RawBackupEvent.FrameEventWithAttachment(frame, attachmentData) =>
+          val fileName =
+            if (frame.hasAttachment) s"att-${frame.getAttachment.getAttachmentId}"
+            else if (frame.hasAvatar) s"avatar-${frame.getAvatar.getName}"
+            else "unknown"
+
+          //println(frame)
+          val out = new FileOutputStream(new File(attachmentsDir, s"$fileName.jpg"))
+          out.write(attachmentData)
+          out.close()
+      }
+    })
+
+  val PrintEvents = FrameEventConsumer[Unit]((), (_, event) => println(event))
+
+  type Histogram[T] = Map[T, Int]
+  object Histogram {
+    def Empty[T] = Map.empty[T, Int]
+  }
+  val PrintFrameTypeHisto =
+    FrameEventConsumer.withFinalStep(
+      Histogram.Empty[String],
+      { (counts: Histogram[String], event: BackupFrameEvent) =>
+        val tag = event.productPrefix
+        val curCount = counts.getOrElse(tag, 0)
+        counts.updated(tag, curCount + 1)
+      }) { histo =>
+        histo.toSeq.sortBy(-_._2).foreach {
+          case (tag, count) =>
+            println(f"$count%5d $tag%s")
+        }
+      }
+
+  val RetrieveRecords = FrameEventConsumer.withFinalStep(
+    BackupReader.State(Map.empty, ListBuffer.empty[BackupRecord]),
+    {
+      BackupReader.recordReader[ListBuffer[BackupRecord]] { (buffer, record) =>
+        buffer += record
+      }
+    })(
+      _.t.result
+    )
+
+  val PrintRecordHeuristics =
+    RetrieveRecords.map { records =>
+      val tables = records.toVector.groupBy(_.tableMetadata.tableName)
+
+      tables.foreach {
+        case (table, records) =>
+          val fields = records.head.tableMetadata.fields.map(_.fieldName)
+
+          println(s"Table [$table]")
+
+          fields.foreach { field =>
+            println(s"Field [$table->$field]")
+
+            val grouper: SqlParameter => Any =
+              field match {
+                case "type" | "msg_box" => // these are bitmaps, structured in a certain way
+                  value =>
+                    val v = value.asLong
+                    (v & 0x1f, v >> 5)
+                case _ => identity
+              }
+
+            records
+              .map(_.data(field))
+              .groupBy(grouper)
+              .toSeq
+              .sortBy(-_._2.size)
+              .take(20) foreach { case (value, els) => println(f"${els.size}%5d -> $value%s") }
+          }
+      }
+    }
+
+  val BuildModel = RetrieveRecords.map(DataModel.convertRecordsToModel)
+
+  val ExportToJson =
+    BuildModel.map { model =>
+      import DataModel.DataModelFormat._
+      import spray.json._
+
+      val output = new FileOutputStream("data.json")
+      output.write(model.toJson.prettyPrint.getBytes("utf8"))
+      output.close()
+    }
+
+  val ExportToHtml =
+    BuildModel.map { model =>
+      import DataModel._
+      model.conversations.filter(_.messages.nonEmpty).foreach { c =>
+        val name = c.recipients match {
+          case g: Group     => g.name
+          case r: Recipient => r.name
+        }
+        val nameClean = name.filter(_.isLetter)
+        val fos = new FileOutputStream(s"conversations/$nameClean.html")
+        fos.write(
+          """
+            |<html>
+            |<body>
+            |<table>
+            |""".stripMargin.getBytes("utf8"))
+
+        def dateString(date: Long): String = new Date(date).toString
+        def whoString(m: SimpleMessage): String =
+          if (m.`type` == Sent) "me"
+          else c.recipients match {
+            case g: Group     => g.recipients.find(_.phone == m.from.get).fold("unknown")(_.name)
+            case r: Recipient => r.name
+          }
+
+        c.messages.foreach { m =>
+          val maybePicture =
+            m match {
+              case MediaMessage(message, attachment) =>
+                val ref = s"../attachments/att-${attachment.uniqueId}.jpg"
+                s"""<td><a href="$ref"><img width="100" src="$ref" alt="${attachment.fileName}"/></a></td>"""
+              case _ => "<td/>"
+            }
+          fos.write(
+            s"""<tr><td>${dateString(m.message.dateSentMillis)}</td><td>${whoString(m.message)}</td>$maybePicture<td>${m.message.body}</td></tr>"""
+              .stripMargin.getBytes("utf8")
+          )
+        }
+
+        fos.write("""
+                    |</table>
+                    |</body>
+                    |</html>
+                  """.stripMargin.getBytes("utf8"))
+        fos.close()
+      }
+    }
+}
 
 object Exporter {
   def existingFile(role: String, path: String): File = {
@@ -29,139 +171,12 @@ object Exporter {
 
   val attachmentsDir = existingFile("Attachments dir", "attachments")
 
-  // dump data
-  def dumpAttachments(): Unit =
-    RawFrameReader.foldRawEvents(backupFile, pass, ())(BackupReader.dumpDataAndAttachments(attachmentsDir))
-
-  // print events
-  def printEvents(): Unit =
-    RawFrameReader.foldRawEvents(backupFile, pass)(
-      FrameEventConsumer(()) { (_, event) =>
-        println(event)
-      }
-    )
-
-  // show frame type histogram
-  def printFrameTypeHisto(): Unit = {
-    val histo =
-      RawFrameReader.foldRawEvents(backupFile, pass)(
-        FrameEventConsumer(Map.empty[String, Int])(BackupReader.dataTypeHistogram)
-      )
-
-    histo.toSeq.sortBy(-_._2).foreach {
-      case (tag, count) =>
-        println(f"$count%5d $tag%s")
-    }
-  }
-
-  val RetrieveRecords = FrameEventConsumer(BackupReader.State(Map.empty, ListBuffer.empty[BackupRecord]))(BackupReader.recordReader[ListBuffer[BackupRecord]] { (buffer, record) =>
-    buffer += record
-  })
-
-  def collectRecords(): ListBuffer[BackupRecord] =
-    RawFrameReader.foldRawEvents(backupFile, pass)(RetrieveRecords).t
-
-  def printRecordHeuristics(): Unit = {
-    val records: ListBuffer[BackupRecord] = collectRecords()
-
-    val tables = records.toVector.groupBy(_.tableMetadata.tableName)
-
-    tables.foreach {
-      case (table, records) =>
-        val fields = records.head.tableMetadata.fields.map(_.fieldName)
-
-        println(s"Table [$table]")
-
-        fields.foreach { field =>
-          println(s"Field [$table->$field]")
-
-          val grouper: SqlParameter => Any =
-            field match {
-              case "type" | "msg_box" => // these are bitmaps, structured in a certain way
-                value =>
-                  val v = value.asLong
-                  (v & 0x1f, v >> 5)
-              case _ => identity
-            }
-
-          records
-            .map(_.data(field))
-            .groupBy(grouper)
-            .toSeq
-            .sortBy(-_._2.size)
-            .take(20) foreach { case (value, els) => println(f"${els.size}%5d -> $value%s") }
-        }
-    }
-  }
-  def exportToJson(): Unit = {
-    val model = DataModel.convertRecordsToModel(collectRecords())
-
-    import DataModel.DataModelFormat._
-    import spray.json._
-
-    val output = new FileOutputStream("data.json")
-    output.write(model.toJson.prettyPrint.getBytes("utf8"))
-    output.close()
-
-    /*println("MMS messages")
-    tables("mms").groupBy(_.data("address")).toSeq.maxBy(_._2.size)._2.sortBy(_.data("date").asInstanceOf[IntParameter].value).foreach { r =>
-      println(s"${r.data("msg_box").asLong & 0x1e} -> ${r.data("body").asString}")
-    }*/
-  }
-  def exportToHtml(): Unit = {
-    val model = DataModel.convertRecordsToModel(collectRecords())
-    import DataModel._
-    model.conversations.filter(_.messages.nonEmpty).foreach { c =>
-      val name = c.recipients match {
-        case g: Group     => g.name
-        case r: Recipient => r.name
-      }
-      val nameClean = name.filter(_.isLetter)
-      val fos = new FileOutputStream(s"conversations/$nameClean.html")
-      fos.write(
-        """
-          |<html>
-          |<body>
-          |<table>
-          |""".stripMargin.getBytes("utf8"))
-
-      def dateString(date: Long): String = new Date(date).toString
-      def whoString(m: SimpleMessage): String =
-        if (m.`type` == Sent) "me"
-        else c.recipients match {
-          case g: Group     => g.recipients.find(_.phone == m.from.get).fold("unknown")(_.name)
-          case r: Recipient => r.name
-        }
-
-      c.messages.foreach { m =>
-        val maybePicture =
-          m match {
-            case MediaMessage(message, attachment) =>
-              val ref = s"../attachments/att-${attachment.uniqueId}.jpg"
-              s"""<td><a href="$ref"><img width="100" src="$ref" alt="${attachment.fileName}"/></a></td>"""
-            case _ => "<td/>"
-          }
-        fos.write(
-          s"""<tr><td>${dateString(m.message.dateSentMillis)}</td><td>${whoString(m.message)}</td>$maybePicture<td>${m.message.body}</td></tr>"""
-            .stripMargin.getBytes("utf8")
-        )
-      }
-
-      fos.write("""
-          |</table>
-          |</body>
-          |</html>
-        """.stripMargin.getBytes("utf8"))
-      fos.close()
-    }
-  }
-
   def main(args: Array[String]): Unit =
     try {
       //dumpAttachments()
       //exportToHtml()
       //exportToJson()
-      printEvents()
+      //printEvents()
     } catch {
       case x: Throwable => x.printStackTrace()
     }
@@ -406,26 +421,5 @@ object BackupReader {
 
       SignalData(conversations)
     }
-  }
-
-  def dumpDataAndAttachments(attachmentsDir: File)(u: Unit, event: RawBackupEvent): Unit = event match {
-    case RawBackupEvent.FrameEvent(frame) => //println(frame)
-    case RawBackupEvent.FrameEventWithAttachment(frame, attachmentData) =>
-      val fileName =
-        if (frame.hasAttachment) s"att-${frame.getAttachment.getAttachmentId}"
-        else if (frame.hasAvatar) s"avatar-${frame.getAvatar.getName}"
-        else "unknown"
-
-      //println(frame)
-      val out = new FileOutputStream(new File(attachmentsDir, s"$fileName.jpg"))
-      out.write(attachmentData)
-      out.close()
-  }
-
-  type Histogram[T] = Map[T, Int]
-  def dataTypeHistogram(counts: Histogram[String], event: BackupFrameEvent): Histogram[String] = {
-    val tag = event.productPrefix
-    val curCount = counts.getOrElse(tag, 0)
-    counts.updated(tag, curCount + 1)
   }
 }

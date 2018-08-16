@@ -33,13 +33,13 @@ object BackupFrameEvent {
 
 object FrameEventReader {
   object FrameEventConsumer {
-    def apply[T](_initial: T)(_step: (T, BackupFrameEvent) => T): RawBackupEventConsumer[T] =
-      new RawFrameReader.RawBackupEventConsumer[T] {
-        val lifted = liftToRaw(_step)
+    def apply[_T](_initial: _T, _step: (_T, BackupFrameEvent) => _T): RawBackupEventConsumer[_T] =
+      withFinalStep[_T, _T](_initial, _step)(identity)
 
-        override def initial: T = _initial
-        override def step(current: T, event: RawBackupEvent): T = lifted(current, event)
-      }
+    def withFinalStep[_T, U](_initial: _T, _step: (_T, BackupFrameEvent) => _T)(_finalStep: _T => U): RawBackupEventConsumer[U] = {
+      val lifted = liftToRaw(_step)
+      RawBackupEventConsumer(_initial, lifted, _finalStep)
+    }
   }
 
   private def liftToRaw[T](f: (T, BackupFrameEvent) => T): (T, RawBackupEvent) => T = { (t, event) =>

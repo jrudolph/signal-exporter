@@ -23,20 +23,33 @@ object RawFrameReader {
   val MaxFrameLength = 1000 * 1000
   val MaxAttachmentLength = 100 * 1000 * 1000
 
-  trait RawBackupEventConsumer[T] {
+  trait RawBackupEventConsumer[U] {
+    type T
     def initial: T
     def step(current: T, event: RawBackupEvent): T
+    def finalStep(result: T): U
+
+    def map[V](f: U => V): RawBackupEventConsumer[V] =
+      RawBackupEventConsumer.apply[T, V](initial, step, t => f(finalStep(t)))
   }
   object RawBackupEventConsumer {
-    def apply[T](_initial: T)(_step: (T, RawBackupEvent) => T): RawBackupEventConsumer[T] =
-      new RawBackupEventConsumer[T] {
+    def apply[_T](_initial: _T, _step: (_T, RawBackupEvent) => _T): RawBackupEventConsumer[_T] =
+      apply[_T, _T](_initial, _step, identity)
+
+    def apply[_T, U](_initial: _T, _step: (_T, RawBackupEvent) => _T, _finalStep: _T => U): RawBackupEventConsumer[U] =
+      new RawBackupEventConsumer[U] {
+        override type T = _T
+
         override def initial: T = _initial
         override def step(current: T, event: RawBackupEvent): T = _step(current, event)
+        override def finalStep(result: _T): U = _finalStep(result)
       }
   }
 
-  def foldRawEvents[T](backupFile: File, password: String)(consumer: RawBackupEventConsumer[T]): T =
-    foldRawEvents(backupFile, password, consumer.initial)(consumer.step)
+  def foldRawEvents[U](backupFile: File, password: String)(consumer: RawBackupEventConsumer[U]): U = {
+    val tResult = foldRawEvents(backupFile, password, consumer.initial)((t, event) => consumer.step(t, event))
+    consumer.finalStep(tResult)
+  }
 
   def foldRawEvents[T](backupFile: File, password: String, initialT: T)(f: (T, RawBackupEvent) => T): T = {
     val fis = new FileInputStream(backupFile)
