@@ -19,9 +19,24 @@ object RawBackupEvent {
   final case class FrameEventWithAttachment(frame: BackupFrame, attachmentData: Array[Byte]) extends RawBackupEvent
 }
 
-object FrameReader {
+object RawFrameReader {
   val MaxFrameLength = 1000 * 1000
   val MaxAttachmentLength = 100 * 1000 * 1000
+
+  trait RawBackupEventConsumer[T] {
+    def initial: T
+    def step(current: T, event: RawBackupEvent): T
+  }
+  object RawBackupEventConsumer {
+    def apply[T](_initial: T)(_step: (T, RawBackupEvent) => T): RawBackupEventConsumer[T] =
+      new RawBackupEventConsumer[T] {
+        override def initial: T = _initial
+        override def step(current: T, event: RawBackupEvent): T = _step(current, event)
+      }
+  }
+
+  def foldRawEvents[T](backupFile: File, password: String)(consumer: RawBackupEventConsumer[T]): T =
+    foldRawEvents(backupFile, password, consumer.initial)(consumer.step)
 
   def foldRawEvents[T](backupFile: File, password: String, initialT: T)(f: (T, RawBackupEvent) => T): T = {
     val fis = new FileInputStream(backupFile)

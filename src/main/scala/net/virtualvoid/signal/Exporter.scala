@@ -1,23 +1,14 @@
 package net.virtualvoid.signal
 
 import java.io.File
-import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.io.InputStream
-import java.security.MessageDigest
 import java.util.Date
 
-import javax.crypto.Cipher
-import javax.crypto.Mac
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.SecretKeySpec
-import net.virtualvoid.signal.BackupReader.BackupFrameEvent.SqlParameter
+import net.virtualvoid.signal.BackupFrameEvent.SqlParameter
 import net.virtualvoid.signal.BackupReader.BackupRecord
 import net.virtualvoid.signal.BackupReader.DataModel
-import org.thoughtcrime.securesms.backup.BackupProtos
-import org.thoughtcrime.securesms.backup.BackupProtos.BackupFrame
+import net.virtualvoid.signal.FrameEventReader.FrameEventConsumer
 
-import scala.annotation.tailrec
 import scala.collection.mutable.ListBuffer
 import scala.io.Source
 
@@ -40,18 +31,22 @@ object Exporter {
 
   // dump data
   def dumpAttachments(): Unit =
-    FrameReader.foldRawEvents(backupFile, pass, ())(BackupReader.dumpDataAndAttachments(attachmentsDir))
+    RawFrameReader.foldRawEvents(backupFile, pass, ())(BackupReader.dumpDataAndAttachments(attachmentsDir))
 
   // print events
   def printEvents(): Unit =
-    FrameReader.foldRawEvents(backupFile, pass, ())(BackupReader.foldBackupFrameEvents { (_, event) =>
-      println(event)
-    })
+    RawFrameReader.foldRawEvents(backupFile, pass)(
+      FrameEventConsumer(()) { (_, event) =>
+        println(event)
+      }
+    )
 
   // show frame type histogram
   def printFrameTypeHisto(): Unit = {
     val histo =
-      FrameReader.foldRawEvents(backupFile, pass, Map.empty[String, Int])(BackupReader.foldBackupFrameEvents(BackupReader.dataTypeHistogram))
+      RawFrameReader.foldRawEvents(backupFile, pass)(
+        FrameEventConsumer(Map.empty[String, Int])(BackupReader.dataTypeHistogram)
+      )
 
     histo.toSeq.sortBy(-_._2).foreach {
       case (tag, count) =>
@@ -59,16 +54,15 @@ object Exporter {
     }
   }
 
-  def records: ListBuffer[BackupRecord] =
-    FrameReader.foldRawEvents(backupFile, pass, BackupReader.State(Map.empty, ListBuffer.empty[BackupRecord]))(BackupReader.foldBackupFrameEvents(BackupReader.recordReader[ListBuffer[BackupRecord]] { (buffer, record) =>
-      buffer += record
-    })).t
+  val RetrieveRecords = FrameEventConsumer(BackupReader.State(Map.empty, ListBuffer.empty[BackupRecord]))(BackupReader.recordReader[ListBuffer[BackupRecord]] { (buffer, record) =>
+    buffer += record
+  })
+
+  def collectRecords(): ListBuffer[BackupRecord] =
+    RawFrameReader.foldRawEvents(backupFile, pass)(RetrieveRecords).t
 
   def printRecordHeuristics(): Unit = {
-    val records: ListBuffer[BackupRecord] =
-      FrameReader.foldRawEvents(backupFile, pass, BackupReader.State(Map.empty, ListBuffer.empty[BackupRecord]))(BackupReader.foldBackupFrameEvents(BackupReader.recordReader[ListBuffer[BackupRecord]] { (buffer, record) =>
-        buffer += record
-      })).t
+    val records: ListBuffer[BackupRecord] = collectRecords()
 
     val tables = records.toVector.groupBy(_.tableMetadata.tableName)
 
@@ -100,7 +94,7 @@ object Exporter {
     }
   }
   def exportToJson(): Unit = {
-    val model = DataModel.convertRecordsToModel(records)
+    val model = DataModel.convertRecordsToModel(collectRecords())
 
     import DataModel.DataModelFormat._
     import spray.json._
@@ -115,7 +109,7 @@ object Exporter {
     }*/
   }
   def exportToHtml(): Unit = {
-    val model = DataModel.convertRecordsToModel(records)
+    val model = DataModel.convertRecordsToModel(collectRecords())
     import DataModel._
     model.conversations.filter(_.messages.nonEmpty).foreach { c =>
       val name = c.recipients match {
@@ -174,82 +168,6 @@ object Exporter {
 }
 
 object BackupReader {
-
-  sealed trait BackupFrameEvent extends Product
-  object BackupFrameEvent {
-    final case class DatabaseVersion(version: Int) extends BackupFrameEvent
-    final case class SharedPreference(file: String, key: String, value: String) extends BackupFrameEvent
-    final case class Avatar(name: String, data: Array[Byte]) extends BackupFrameEvent
-    sealed trait SqlParameter extends Product {
-      def asString: String = notConvertible("String")
-      def asLong: Long = notConvertible("Long")
-
-      private def notConvertible(to: String): Nothing =
-        throw new IllegalArgumentException(s"$productPrefix cannot be converted to $to")
-    }
-    final case class StringParameter(value: String) extends SqlParameter {
-      override def asString: String = value
-    }
-    final case class IntParameter(value: Long) extends SqlParameter {
-      override def asLong: Long = value
-    }
-    final case class DoubleParameter(value: Double) extends SqlParameter
-    final case class BlobParameter(data: Array[Byte]) extends SqlParameter
-    final case object NullParameter extends SqlParameter {
-      override def asString: String = ""
-    }
-
-    final case class SqlStatement(statement: String, parameters: Seq[SqlParameter]) extends BackupFrameEvent
-    final case class Attachment(rowId: Long, attachmentId: Long, data: Array[Byte]) extends BackupFrameEvent
-    final case object End extends BackupFrameEvent
-  }
-  def foldBackupFrameEvents[T](f: (T, BackupFrameEvent) => T): (T, RawBackupEvent) => T = { (t, event) =>
-    import BackupFrameEvent._
-    import RawBackupEvent._
-
-    val richEvent =
-      event match {
-        case FrameEvent(frame) =>
-          if (frame.hasVersion)
-            DatabaseVersion(frame.getVersion.getVersion)
-          else if (frame.hasPreference) {
-            val pref = frame.getPreference
-            SharedPreference(pref.getFile, pref.getKey, pref.getValue)
-          } else if (frame.hasStatement) {
-            val stmt = frame.getStatement
-            import scala.collection.JavaConverters._
-            val params = stmt.getParametersList.asScala.map { param =>
-              if (param.hasStringParamter)
-                StringParameter(param.getStringParamter)
-              else if (param.hasIntegerParameter)
-                IntParameter(param.getIntegerParameter)
-              else if (param.hasDoubleParameter)
-                DoubleParameter(param.getDoubleParameter)
-              else if (param.hasBlobParameter)
-                BlobParameter(param.getBlobParameter.toByteArray)
-              else if (param.hasNullparameter)
-                NullParameter
-              else
-                throw new IllegalStateException(s"Unexpected SQL parameter: $param")
-            }.toVector
-            SqlStatement(stmt.getStatement, params)
-          } else if (frame.hasEnd)
-            End
-          else
-            throw new IllegalStateException(s"Unexpected event: $event")
-
-        case FrameEventWithAttachment(frame, attachmentData) =>
-          if (frame.hasAttachment) {
-            val attachment = frame.getAttachment
-            Attachment(attachment.getRowId, attachment.getAttachmentId, attachmentData)
-          } else if (frame.hasAvatar) {
-            val avatar = frame.getAvatar
-            Avatar(avatar.getName, attachmentData)
-          } else throw new IllegalStateException(s"Unexpected event with attachment: $attachmentData")
-
-      }
-    f(t, richEvent)
-  }
 
   final case class FieldMetadata(
       fieldName: String,
