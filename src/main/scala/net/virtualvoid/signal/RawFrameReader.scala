@@ -29,7 +29,7 @@ object RawFrameReader {
     def step(current: T, event: RawBackupEvent): T
     def finalStep(result: T): U
 
-    def map[V](f: U => V): RawBackupEventConsumer[V] =
+    def andThen[V](f: U => V): RawBackupEventConsumer[V] =
       RawBackupEventConsumer.apply[T, V](initial, step, t => f(finalStep(t)))
   }
   object RawBackupEventConsumer {
