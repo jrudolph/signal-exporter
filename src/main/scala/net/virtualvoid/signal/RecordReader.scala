@@ -24,11 +24,12 @@ object RecordReader {
       tableMetadata: TableMetadata,
       data:          Map[String, BackupFrameEvent.SqlParameter]
   )
-  final case class State[T](tableMetadata: Map[String, TableMetadata], t: T)
+
+  private final case class State[T](tableMetadata: Map[String, TableMetadata], t: T)
   val CreateTable = """CREATE TABLE (\w+) \(([^)]*)\)""".r
   val FieldSpec = """\s*(\w+) (\w+)(?: (.*))?""".r
   val Insert = """INSERT INTO (\w+) VALUES \([?,]*\)""".r
-  def recordReader[T](f: (T, BackupRecord) => T)(state: State[T], event: BackupFrameEvent): State[T] = event match {
+  private def recordReader[T](f: (T, BackupRecord) => T)(state: State[T], event: BackupFrameEvent): State[T] = event match {
     case BackupFrameEvent.SqlStatement(statement, parameters) =>
       statement match {
         case CreateTable(tableName, fieldSpecs) =>

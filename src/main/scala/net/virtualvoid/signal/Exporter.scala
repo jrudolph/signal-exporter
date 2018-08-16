@@ -23,10 +23,7 @@ object Exporter {
 
   def main(args: Array[String]): Unit =
     try {
-      //dumpAttachments()
-      //exportToHtml()
-      //exportToJson()
-      //printEvents()
+      // TODO: call operations
     } catch {
       case x: Throwable => x.printStackTrace()
     }
