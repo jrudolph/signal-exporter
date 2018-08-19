@@ -24,11 +24,8 @@ object Exporter {
   def main(args: Array[String]): Unit =
     try {
       // TODO: call operations
+
     } catch {
       case x: Throwable => x.printStackTrace()
     }
-}
-
-object BackupReader {
-
 }

@@ -6,7 +6,7 @@ lib_managed/
 src_managed/
 test-output/
 *.iml
-passphrase.txt
+passphrase*
 backup.bin
 attachments
 conversations
