@@ -130,7 +130,7 @@ object RawFrameReader {
   class EncryptedInputStreamReader(fis: InputStream, cipherSetup: CipherSetup) extends PlainInputStreamReader(fis) {
     def nextIv(iv: Array[Byte]): Array[Byte] = {
       val i = uint32BE(iv) + 1
-      val res = iv.clone()
+      val res = iv.clone() // iv is 16 bytes long and we count only in the first 4 bytes
       res(0) = (i >> 24).toByte
       res(1) = (i >> 16).toByte
       res(2) = (i >> 8).toByte
@@ -142,7 +142,7 @@ object RawFrameReader {
       val len = uint32BE()
       require(len < MaxFrameLength, s"Frame length [${len}] > MaxFrameLength [$MaxFrameLength]. Data corrupted?")
       val encFrameData = bytes(len - 10)
-      val mac = bytes(10)
+      val _ /*mac*/ = bytes(10)
       val plainFrameData = cipherSetup.decrypt(iv, encFrameData)
       val frame = BackupProtos.BackupFrame.parseFrom(plainFrameData)
 
@@ -158,7 +158,7 @@ object RawFrameReader {
 
         val attIv = nextIv(iv)
         val encAtt = bytes(extraDataLength)
-        val attMac = bytes(10)
+        val _ /*attMac*/ = bytes(10)
         val plainAtt = cipherSetup.decrypt(attIv, encAtt)
 
         (RawBackupEvent.FrameEventWithAttachment(frame, plainAtt), nextIv(attIv))
