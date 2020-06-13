@@ -20,12 +20,14 @@ object Operations {
         case RawBackupEvent.FrameEvent(frame) => //println(frame)
         case RawBackupEvent.FrameEventWithAttachment(frame, attachmentData) =>
           val fileName =
-            if (frame.hasAttachment) s"att-${frame.getAttachment.getAttachmentId}"
-            else if (frame.hasAvatar) s"avatar-${frame.getAvatar.getName}"
+            if (frame.hasAttachment) {
+              val ext = "jpg" // FIXME (which needs more data from row)
+              s"att-${frame.getAttachment.getAttachmentId}.$ext"
+            } else if (frame.hasAvatar) s"avatar-${frame.getAvatar.getName}.jpg"
             else "unknown"
 
           //println(frame)
-          val out = new FileOutputStream(new File(attachmentsDir, s"$fileName.jpg"))
+          val out = new FileOutputStream(new File(attachmentsDir, s"$fileName"))
           out.write(attachmentData)
           out.close()
       }
