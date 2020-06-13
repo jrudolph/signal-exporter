@@ -16,7 +16,7 @@ object Exporter {
 
   val backupFile = existingFile("Backup file", "backup.bin")
   val passFile = existingFile("Passphrase file", "passphrase.txt")
-  val pass = Source.fromFile(passFile).mkString
+  val pass = Source.fromFile(passFile).mkString.replaceAll("\\s", "")
   require(pass.length == 30, s"Passphrase must have 30 characters but had ${pass.length}")
 
   val attachmentsDir = existingFile("Attachments dir", "attachments")
