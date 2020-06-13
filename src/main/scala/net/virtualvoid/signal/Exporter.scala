@@ -24,7 +24,8 @@ object Exporter {
   def main(args: Array[String]): Unit =
     try {
       // TODO: call operations
-
+      //Operations.ExportToHtml.run(backupFile, pass)
+      Operations.PrintFrameTypeHisto.run(backupFile, pass)
     } catch {
       case x: Throwable => x.printStackTrace()
     }

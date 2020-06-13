@@ -31,6 +31,9 @@ object RawFrameReader {
 
     def andThen[V](f: U => V): RawBackupEventConsumer[V] =
       RawBackupEventConsumer.apply[T, V](initial, step, t => f(finalStep(t)))
+
+    def run(backupFile: File, pass: String): U =
+      foldRawEvents(backupFile, pass)(this)
   }
   object RawBackupEventConsumer {
     def apply[_T](_initial: _T, _step: (_T, RawBackupEvent) => _T): RawBackupEventConsumer[_T] =
