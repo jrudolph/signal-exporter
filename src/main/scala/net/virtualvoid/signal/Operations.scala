@@ -147,9 +147,15 @@ object Operations {
 
                 val ref = s"../attachments/att-${attachment.uniqueId}.jpg"
                 val linkFile = new File(mediaDir, s"${fileNameDate.format(new Date(m.message.dateSentMillis))}-${whoString(m.message).replaceAll("\\W", "_")}.$ext")
-                val target = new File(s"../../attachments/att-${attachment.uniqueId}.jpg")
-                Files.createSymbolicLink(linkFile.toPath, target.toPath)
-                s"""<td><a href="$ref"><img width="100" src="$ref" alt="${attachment.fileName}"/></a></td><td>${attachment.contentType}</td>"""
+                val target = new File(s"attachments/att-${attachment.uniqueId}.jpg").getAbsoluteFile
+                if (target.exists) {
+                  Files.createSymbolicLink(linkFile.toPath, target.toPath)
+                  s"""<td><a href="$ref"><img width="100" src="$ref" alt="${attachment.fileName}"/></a></td><td>${attachment.contentType}</td>"""
+                } else {
+                  println(s"Attachment missing [$ref] for ${linkFile.getName}")
+                  "<td/><td/>"
+                }
+
               case _ => "<td/><td/>"
             }
           fos.write(
