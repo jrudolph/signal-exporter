@@ -152,7 +152,7 @@ object DataModel {
               )
             }
           }
-        }
+        }.toMap
 
       val mmsByThread = tables("mms").groupBy(_.data("thread_id").asLong)
       val mmsConvs: Map[Long, Seq[Message]] =
@@ -178,7 +178,7 @@ object DataModel {
               }
             }
           }
-        }
+        }.toMap
 
       combineMaps(smsConvs, mmsConvs, Nil)((c1, c2) => (c1 ++ c2).sortBy(_.message.dateSentMillis)).toSeq.map {
         case (threadId, msgs) =>
