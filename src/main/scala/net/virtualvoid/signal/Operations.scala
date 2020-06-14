@@ -2,6 +2,8 @@ package net.virtualvoid.signal
 
 import java.io.File
 import java.io.FileOutputStream
+import java.nio.file.Files
+import java.text.SimpleDateFormat
 import java.util.Date
 
 import BackupFrameEvent.SqlParameter
@@ -104,6 +106,9 @@ object Operations {
   val ExportToHtml =
     BuildModel.andThen { model =>
       import DataModel._
+      val targetDir = new File("conversations")
+      targetDir.mkdirs()
+
       model.conversations.filter(_.messages.nonEmpty).foreach { c =>
         val name = c.recipients match {
           case g: Group     => g.name
@@ -111,6 +116,8 @@ object Operations {
         }
         val nameClean = name.filter(_.isLetter)
         val fos = new FileOutputStream(s"conversations/$nameClean.html")
+        val mediaDir = new File(s"conversations/$nameClean")
+        mediaDir.mkdirs()
         fos.write(
           """
             |<html>
@@ -130,9 +137,20 @@ object Operations {
           val maybePicture =
             m match {
               case MediaMessage(message, attachment) =>
+                val ext = attachment.contentType match {
+                  case "image/jpeg"      => "jpg"
+                  case "image/png"       => "png"
+                  case "video/mp4"       => "mp4"
+                  case "application/pdf" => "pdf"
+                  case _                 => "bin"
+                }
+
                 val ref = s"../attachments/att-${attachment.uniqueId}.jpg"
-                s"""<td><a href="$ref"><img width="100" src="$ref" alt="${attachment.fileName}"/></a></td>"""
-              case _ => "<td/>"
+                val linkFile = new File(mediaDir, s"${fileNameDate.format(new Date(m.message.dateSentMillis))}-${whoString(m.message).replaceAll("\\W", "_")}.$ext")
+                val target = new File(s"../../attachments/att-${attachment.uniqueId}.jpg")
+                Files.createSymbolicLink(linkFile.toPath, target.toPath)
+                s"""<td><a href="$ref"><img width="100" src="$ref" alt="${attachment.fileName}"/></a></td><td>${attachment.contentType}</td>"""
+              case _ => "<td/><td/>"
             }
           fos.write(
             s"""<tr><td>${dateString(m.message.dateSentMillis)}</td><td>${whoString(m.message)}</td>$maybePicture<td>${m.message.body}</td></tr>"""
@@ -148,4 +166,6 @@ object Operations {
         fos.close()
       }
     }
+
+  private lazy val fileNameDate = new SimpleDateFormat("YYYY-MM-dd-HH-mm-ss")
 }
