@@ -33,23 +33,42 @@ object Exporter {
       //Operations.PrintFrameTypeHisto.run(backupFile, pass)
 
       import sys.process._
-      def fileInfoContains(file: File, cands: String*): Boolean =
+      def fileInfoContains(cands: String*): File => Boolean = file =>
         fileInfoMatches(file, p => cands.exists(p.contains))
       def fileInfoMatches(file: File, p: String => Boolean): Boolean =
-        p(s"file ${file.getAbsolutePath}".!!)
+        p(s"""file "${file.getAbsolutePath}"""".!!)
+
+      val jpegCreatedBySignal: File => Boolean = { file =>
+        val wasCreated = s"""exiftool -UserComment "${file.getAbsolutePath}"""".!!.contains("signal_original_hash")
+        if (wasCreated) println(s"${Console.BLUE}$file was created by exporter${Console.RESET}")
+        wasCreated
+      }
+      val videoCreatedBySignal: File => Boolean = { file =>
+        val wasCreated = s"""ffprobe -v quiet -show_format "${file.getAbsolutePath}"""".!!.contains("signal_original_hash")
+        if (wasCreated) println(s"${Console.BLUE}$file was created by exporter${Console.RESET}")
+        wasCreated
+      }
+      implicit class PredicateExt[T](p: T => Boolean) {
+        def ||(other: T => Boolean): T => Boolean = t => p(t) || other(t)
+        def &&(other: T => Boolean): T => Boolean = t => p(t) && other(t)
+        def unary_! : T => Boolean = t => !p(t)
+      }
 
       val downsizeImage = Operation(
-        "downsize1mp70p",
-        fileInfoContains(_, "JPEG", "PNG"),
+        "downsize1mp70pwithmeta",
+        fileInfoContains("JPEG", "PNG") && !jpegCreatedBySignal,
         { (orig, target, hash) =>
           val cmdLine = s"""convert -resize 1000000@> -quality 70% -format jpeg "${orig.getAbsolutePath}" "${target.getAbsolutePath}""""
           println(s"Running [$cmdLine]")
           cmdLine.!
+          val exifCmdLine = s"""exiftool -overwrite_original -m -UserComment="signal_original_hash=$hash" "${target.getAbsolutePath}""""
+          println(s"Running [$exifCmdLine]")
+          exifCmdLine.!
         }
       )
       val downsizeVideo = Operation(
         "downsizevideo24fps720px265crf30withmeta",
-        fileInfoContains(_, "MP4", "3GPP"),
+        fileInfoContains("MP4", "3GPP") && !videoCreatedBySignal,
         { (orig, target, hash) =>
           val cmdLine = s"""ffmpeg -i "${orig.getAbsolutePath}" -vf "scale='min(720,iw)':-2" -f mp4 -r 24 -vcodec libx265 -crf 30 -map_metadata 0 -movflags use_metadata_tags -metadata signal_original_hash='$hash' "${target.getAbsolutePath}""""
           println(s"Running [$cmdLine]")
@@ -101,6 +120,7 @@ object Exporter {
         if (!targetFile.exists()) op.run(f, targetFile, toHexAscii(hash))
         load(targetFile)
       case _ =>
+        println(s"${Console.YELLOW}No op matched for ${f.getAbsoluteFile}${Console.RESET}")
         att
     }
   }
