@@ -142,6 +142,7 @@ object RawFrameReader {
     def getAttachmentLength(frame: BackupFrame): Int =
       if (frame.hasAttachment) frame.getAttachment.getLength
       else if (frame.hasAvatar) frame.getAvatar.getLength
+      else if (frame.hasSticker) frame.getSticker.getLength
       else throw new IllegalArgumentException(s"Frame cannot have attachment ${frame}")
 
     writeHeaderFrame()
@@ -201,6 +202,8 @@ object RawFrameReader {
           frame.getAttachment.getLength
         else if (frame.hasAvatar)
           frame.getAvatar.getLength
+        else if (frame.hasSticker)
+          frame.getSticker.getLength
         else -1
 
       if (extraDataLength >= 0) {

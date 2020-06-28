@@ -28,6 +28,7 @@ object BackupFrameEvent {
 
   final case class SqlStatement(statement: String, parameters: Seq[SqlParameter]) extends BackupFrameEvent
   final case class Attachment(rowId: Long, attachmentId: Long, data: Array[Byte]) extends BackupFrameEvent
+  final case class Sticker(rowId: Long, data: Array[Byte]) extends BackupFrameEvent
   final case object End extends BackupFrameEvent
 }
 
@@ -84,7 +85,11 @@ object FrameEventReader {
           } else if (frame.hasAvatar) {
             val avatar = frame.getAvatar
             Avatar(avatar.getName, attachmentData)
-          } else throw new IllegalStateException(s"Unexpected event with attachment: $attachmentData")
+          } else if (frame.hasSticker) {
+            val sticker = frame.getSticker
+            Sticker(sticker.getRowId, attachmentData)
+          } else
+            throw new IllegalStateException(s"Unexpected event with attachment: $attachmentData")
 
       }
     f(t, richEvent)
