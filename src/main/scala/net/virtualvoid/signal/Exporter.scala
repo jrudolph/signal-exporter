@@ -33,17 +33,15 @@ object Exporter {
       //Operations.PrintFrameTypeHisto.run(backupFile, pass)
 
       import sys.process._
-      def fileInfoContains(cands: String*): File => Boolean = file =>
-        fileInfoMatches(file, p => cands.exists(p.contains))
-      def fileInfoMatches(file: File, p: String => Boolean): Boolean =
-        p(s"""file "${file.getAbsolutePath}"""".!!)
+      def fileInfoContains(cands: String*): (String, File) => Boolean = (info, file) =>
+        cands.exists(info.contains)
 
-      val jpegCreatedBySignal: File => Boolean = { file =>
+      val jpegCreatedBySignal: (String, File) => Boolean = { (_, file) =>
         val wasCreated = s"""exiftool -UserComment "${file.getAbsolutePath}"""".!!.contains("signal_original_hash")
         if (wasCreated) println(s"${Console.BLUE}$file was created by exporter${Console.RESET}")
         wasCreated
       }
-      val videoCreatedBySignal: File => Boolean = { file =>
+      val videoCreatedBySignal: (String, File) => Boolean = { (_, file) =>
         val wasCreated = s"""ffprobe -v quiet -show_format "${file.getAbsolutePath}"""".!!.contains("signal_original_hash")
         if (wasCreated) println(s"${Console.BLUE}$file was created by exporter${Console.RESET}")
         wasCreated
@@ -52,6 +50,11 @@ object Exporter {
         def ||(other: T => Boolean): T => Boolean = t => p(t) || other(t)
         def &&(other: T => Boolean): T => Boolean = t => p(t) && other(t)
         def unary_! : T => Boolean = t => !p(t)
+      }
+      implicit class Predicate2Ext[T, U](p: (T, U) => Boolean) {
+        def ||(other: (T, U) => Boolean): (T, U) => Boolean = (t, u) => p(t, u) || other(t, u)
+        def &&(other: (T, U) => Boolean): (T, U) => Boolean = (t, u) => p(t, u) && other(t, u)
+        def unary_! : (T, U) => Boolean = (t, u) => !p(t, u)
       }
 
       val downsizeImage = Operation(
@@ -75,46 +78,53 @@ object Exporter {
           cmdLine.!
         }
       )
-      val newFile = new File("newfile.bin")
-      RawFrameReader.writeEvents(newFile, pass,
-        RawFrameReader.rawEventIterator(backupFile, pass)
-          .map {
-            case fe: RawBackupEvent.FrameEvent => fe
-            case fe @ RawBackupEvent.FrameEventWithAttachment(frame, att) =>
-              if (frame.hasAttachment) {
-                val res = runOps(Seq(downsizeImage, downsizeVideo), att)
+      val newFile = new File("newfile3.bin")
 
-                if (res.length < att.length) {
-                  println(f"Downsized ${frame.getAttachment.getAttachmentId} from ${att.size} to ${res.size} (${res.size.toDouble / att.length * 100}%4.1f %%)")
+      def rewriteFile(): Unit = {
+        RawFrameReader.writeEvents(newFile, pass,
+          RawFrameReader.rawEventIterator(backupFile, pass)
+            .map {
+              case fe: RawBackupEvent.FrameEvent => fe
+              case fe @ RawBackupEvent.FrameEventWithAttachment(frame, att) =>
+                if (frame.hasAttachment) {
+                  val res = runOps(Seq(downsizeImage, downsizeVideo), att)
 
-                  val newFrame =
-                    BackupFrame.newBuilder(frame)
-                      .setAttachment {
-                        Attachment.newBuilder(frame.getAttachment)
-                          .setLength(res.length)
-                      }
-                      .build()
+                  if (res.length < att.length) {
+                    println(f"Downsized ${frame.getAttachment.getAttachmentId} from ${att.size} to ${res.size} (${res.size.toDouble / att.length * 100}%4.1f %%)")
 
-                  RawBackupEvent.FrameEventWithAttachment(newFrame, res)
-                } else {
-                  println(f"${Console.RED}Operation increased file size${Console.RESET} ${frame.getAttachment.getAttachmentId} from ${att.size} to ${res.size} (${res.size.toDouble / att.length * 100}%4.1f %%) keeping old")
-                  fe
-                }
-              } else fe
-          }
-      )
-      println("Finished writing")
+                    val newFrame =
+                      BackupFrame.newBuilder(frame)
+                        .setAttachment {
+                          Attachment.newBuilder(frame.getAttachment)
+                            .setLength(res.length)
+                        }
+                        .build()
+
+                    RawBackupEvent.FrameEventWithAttachment(newFrame, res)
+                  } else {
+                    println(f"${Console.RED}Operation increased file size${Console.RESET} ${frame.getAttachment.getAttachmentId} from ${att.size} to ${res.size} (${res.size.toDouble / att.length * 100}%4.1f %%) keeping old")
+                    fe
+                  }
+                } else fe
+            }
+        )
+        println("Finished writing")
+      }
+      rewriteFile()
       Operations.PrintFrameTypeHisto.run(newFile, pass)
+      //Operations.PrintFrameTypeHisto.run(backupFile, pass)
     } catch {
       case x: Throwable => x.printStackTrace()
     }
 
-  case class Operation(short: String, isApplicable: File => Boolean, run: (File, File, String) => Unit)
+  case class Operation(short: String, isApplicable: (String, File) => Boolean, run: (File, File, String) => Unit)
 
   def runOps(ops: Seq[Operation], att: Array[Byte]): Array[Byte] = {
+    import sys.process._
     val hash = sha256(att)
     val f = ensureInCache(hash, att)
-    ops.find(_.isApplicable(f)) match {
+    val info = s"""file "${f.getAbsolutePath}"""".!!
+    ops.find(_.isApplicable(info, f)) match {
       case Some(op) =>
         val targetFile = convertedCacheFile(hash, op)
         if (!targetFile.exists()) op.run(f, targetFile, toHexAscii(hash))
